@@ -1,0 +1,12 @@
+.git
+.env
+__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+venv/
+.venv/
+tests/
+scripts/demo.py
+README.md
+*.md

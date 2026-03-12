@@ -1,0 +1,148 @@
+###############################################################################
+# Document Conversion Service – Docker Compose
+# Services: LocalStack (SQS + S3), RabbitMQ, Kafka + Zookeeper, App
+###############################################################################
+version: "3.9"
+
+x-common-env: &common-env
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_DEFAULT_REGION: us-east-1
+
+services:
+  # ─────────────────────────── Infrastructure ───────────────────────────
+  localstack:
+    image: localstack/localstack:3.4
+    container_name: docconv-localstack
+    ports:
+      - "4566:4566"          # Gateway
+    environment:
+      <<: *common-env
+      SERVICES: sqs,s3
+      DEBUG: 0
+      EAGER_SERVICE_LOADING: 1
+    volumes:
+      - "./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init.sh"
+      - localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: docconv-rabbitmq
+    ports:
+      - "5672:5672"          # AMQP
+      - "15672:15672"        # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: docconv
+      RABBITMQ_DEFAULT_PASS: docconv
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 10
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    container_name: docconv-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: docconv-kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ────────────────────── FTP Server (for demo) ─────────────────────────
+  ftp:
+    image: fauria/vsftpd:latest
+    container_name: docconv-ftp
+    ports:
+      - "21:21"
+      - "21100-21110:21100-21110"
+    environment:
+      FTP_USER: docconv
+      FTP_PASS: docconv
+      PASV_MIN_PORT: 21100
+      PASV_MAX_PORT: 21110
+      PASV_ADDRESS: ftp
+    volumes:
+      - ftp_data:/home/vsftpd/docconv
+
+  # ──────────────────── Document Conversion App ─────────────────────────
+  docconv-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: docconv-app
+    ports:
+      - "8080:8080"          # REST API
+    depends_on:
+      localstack:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+      # ── Feature flags ──
+      ENABLE_API: "true"                     # set "false" to disable HTTP API
+      ENABLE_SQS: "true"
+      ENABLE_RABBITMQ: "true"
+      ENABLE_KAFKA: "true"
+      # ── Endpoints ──
+      SQS_ENDPOINT_URL: http://localstack:4566
+      SQS_QUEUE_NAME: docconv-jobs
+      S3_ENDPOINT_URL: http://localstack:4566
+      S3_OUTPUT_BUCKET: docconv-output
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: docconv
+      RABBITMQ_PASS: docconv
+      RABBITMQ_QUEUE: docconv-jobs
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: docconv-jobs
+      KAFKA_GROUP_ID: docconv-group
+      FTP_HOST: ftp
+      # ── Tuning ──
+      CHUNK_SIZE: "65536"                    # 64 KB read chunks
+      TMP_DIR: /tmp/docconv
+      LOG_LEVEL: INFO
+    volumes:
+      - tmp_data:/tmp/docconv
+    restart: unless-stopped
+
+volumes:
+  localstack_data:
+  rabbitmq_data:
+  ftp_data:
+  tmp_data:
