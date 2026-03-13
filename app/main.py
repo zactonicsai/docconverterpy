@@ -69,6 +69,12 @@ def main():
     _banner()
     threads: list[threading.Thread] = []
 
+    # ── Bootstrap AWS resources (SQS queues, S3 buckets) ─────────────────
+    # This creates missing resources on every startup, making the service
+    # independent of the LocalStack init script (which can fail on macOS).
+    from app.bootstrap import bootstrap_aws_resources
+    bootstrap_aws_resources()
+
     # ── SQS ──────────────────────────────────────────────────────────────
     if settings.enable_sqs:
         from app.bus.sqs_listener import run_sqs_listener

@@ -22,7 +22,6 @@ services:
       DEBUG: 0
       EAGER_SERVICE_LOADING: 1
     volumes:
-      - "./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init.sh"
       - localstack_data:/var/lib/localstack
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
