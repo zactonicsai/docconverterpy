@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config.settings import settings
 from app.models import ConversionJob, ConversionResult, DocumentType, LocationType
-from app.processor import process_job
+from app.processor import process_job_async
 
 logger = logging.getLogger(__name__)
 
@@ -181,7 +181,7 @@ async def submit_job(job: ConversionJob):
     if job.location_type == LocationType.LOCAL:
         raise HTTPException(400, "Use /convert/upload for local file uploads")
 
-    result = process_job(job)
+    result = await process_job_async(job)
     status = 200 if result.success else 500
     return JSONResponse(content=result.model_dump(), status_code=status)
 
@@ -196,8 +196,10 @@ async def upload_file(
     output_s3_key: Optional[str] = Form(None),
 ):
     """
-    Upload a file directly.  The service saves it to a tmp file, converts
-    it, and uploads the text to S3.
+    Upload a file directly.  The service saves it to a tmp file, then:
+      - If Temporal is enabled: stages the file to S3 and submits an S3-sourced
+        workflow (so the path survives across Temporal activity boundaries).
+      - If Temporal is off: processes directly from the local tmp file.
     """
     job_id = uuid.uuid4().hex[:12]
     ext = os.path.splitext(file.filename or "")[1] or ""
@@ -214,15 +216,53 @@ async def upload_file(
     except Exception as exc:
         raise HTTPException(500, f"Failed to save upload: {exc}")
 
-    job = ConversionJob(
-        job_id=job_id,
-        document_type=document_type,
-        location_type=LocationType.LOCAL,
-        output_s3_bucket=output_s3_bucket,
-        output_s3_key=output_s3_key,
-    )
+    if settings.use_temporal_workflows and settings.enable_temporal:
+        # ── Temporal path: stage file to S3, then submit as S3 job ───────
+        # This ensures the file survives across Temporal activity boundaries
+        # and the workflow is fully restartable / retryable.
+        import boto3
+        staging_key = f"uploads/{job_id}{ext}"
+        try:
+            s3 = boto3.client(
+                "s3",
+                endpoint_url=settings.s3_endpoint_url,
+                aws_access_key_id=settings.aws_access_key_id,
+                aws_secret_access_key=settings.aws_secret_access_key,
+                region_name=settings.aws_default_region,
+            )
+            s3.upload_file(tmp_path, settings.s3_output_bucket, staging_key)
+            logger.info("Staged upload to s3://%s/%s", settings.s3_output_bucket, staging_key)
+        except Exception as exc:
+            raise HTTPException(500, f"Failed to stage file to S3: {exc}")
+        finally:
+            # Remove local tmp – S3 is now the source of truth
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
-    result = process_job(job, local_file_path=tmp_path)
+        job = ConversionJob(
+            job_id=job_id,
+            document_type=document_type,
+            location_type=LocationType.S3,
+            s3_bucket=settings.s3_output_bucket,
+            s3_key=staging_key,
+            s3_endpoint_url=settings.s3_endpoint_url,
+            output_s3_bucket=output_s3_bucket,
+            output_s3_key=output_s3_key,
+        )
+        result = await process_job_async(job)
+    else:
+        # ── Direct path: process from local tmp file ─────────────────────
+        job = ConversionJob(
+            job_id=job_id,
+            document_type=document_type,
+            location_type=LocationType.LOCAL,
+            output_s3_bucket=output_s3_bucket,
+            output_s3_key=output_s3_key,
+        )
+        result = await process_job_async(job, local_file_path=tmp_path)
+
     status = 200 if result.success else 500
     return JSONResponse(content=result.model_dump(), status_code=status)
 

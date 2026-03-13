@@ -1,14 +1,12 @@
 """
 Processing pipeline: fetch → convert → upload.
 
-Supports two execution modes:
-  1. Direct (USE_TEMPORAL_WORKFLOWS=false): inline pipeline.
-  2. Temporal (USE_TEMPORAL_WORKFLOWS=true): durable workflow for ALL jobs,
-     including direct file uploads. Every conversion appears in the
-     Temporal dashboard.
+Two entry points:
+  - process_job_async() – for FastAPI endpoints (uses await)
+  - process_job()       – for bus listener threads (sync)
 
-For LOCAL uploads, the workflow skips the fetch step (file is already on
-disk) and goes straight to convert → upload → cleanup.
+When Temporal is enabled, ALL jobs route through Temporal workflows
+for full dashboard visibility, including direct file uploads.
 """
 
 import logging
@@ -24,29 +22,68 @@ from config.settings import settings
 logger = logging.getLogger(__name__)
 
 
-def process_job(job: ConversionJob, local_file_path: str | None = None) -> ConversionResult:
-    """
-    Execute the full conversion pipeline for a single job.
+# ═════════════════════════════════════════════════════════════════════════════
+# ASYNC entry point – called by FastAPI endpoints
+# ═════════════════════════════════════════════════════════════════════════════
 
-    When Temporal is enabled, ALL jobs (including file uploads) route
-    through Temporal for full dashboard visibility. The workflow skips
-    the fetch step for LOCAL uploads since the file is already on disk.
+async def process_job_async(
+    job: ConversionJob, local_file_path: str | None = None
+) -> ConversionResult:
+    """
+    Async entry point for FastAPI.  Routes through Temporal when enabled.
     """
     if settings.use_temporal_workflows and settings.enable_temporal:
-        return _process_via_temporal(job, local_file_path)
+        return await _process_via_temporal_async(job, local_file_path)
 
     return _process_direct(job, local_file_path)
 
 
-def _process_via_temporal(
+async def _process_via_temporal_async(
     job: ConversionJob, local_file_path: str | None = None
 ) -> ConversionResult:
-    """Submit any job to Temporal – remote or local upload."""
+    """Submit to Temporal using await (no event loop conflict)."""
     job_id = job.job_id or uuid.uuid4().hex[:12]
     job.job_id = job_id
-    logger.info("Routing job %s through Temporal  type=%s  loc=%s  local_path=%s",
-                job_id, job.document_type.value, job.location_type.value,
-                "yes" if local_file_path else "no")
+    logger.info("Routing job %s through Temporal (async)  type=%s  loc=%s",
+                job_id, job.document_type.value, job.location_type.value)
+
+    try:
+        from app.workflows.client import start_conversion_workflow
+        return await start_conversion_workflow(
+            job, local_file_path=local_file_path, wait_for_result=True
+        )
+    except Exception as exc:
+        logger.warning(
+            "Temporal routing failed for job %s, falling back to direct: %s",
+            job_id, exc,
+        )
+        return _process_direct(job, local_file_path)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SYNC entry point – called by bus listener threads
+# ═════════════════════════════════════════════════════════════════════════════
+
+def process_job(
+    job: ConversionJob, local_file_path: str | None = None
+) -> ConversionResult:
+    """
+    Sync entry point for bus listeners (SQS, RabbitMQ, Kafka threads).
+    """
+    if settings.use_temporal_workflows and settings.enable_temporal:
+        return _process_via_temporal_sync(job, local_file_path)
+
+    return _process_direct(job, local_file_path)
+
+
+def _process_via_temporal_sync(
+    job: ConversionJob, local_file_path: str | None = None
+) -> ConversionResult:
+    """Submit to Temporal from a sync thread context."""
+    job_id = job.job_id or uuid.uuid4().hex[:12]
+    job.job_id = job_id
+    logger.info("Routing job %s through Temporal (sync)  type=%s  loc=%s",
+                job_id, job.document_type.value, job.location_type.value)
 
     try:
         from app.workflows.client import start_conversion_workflow_sync
@@ -61,10 +98,14 @@ def _process_via_temporal(
         return _process_direct(job, local_file_path)
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# DIRECT pipeline – fallback when Temporal is off or unreachable
+# ═════════════════════════════════════════════════════════════════════════════
+
 def _process_direct(
     job: ConversionJob, local_file_path: str | None = None
 ) -> ConversionResult:
-    """Direct (inline) processing – fallback when Temporal is off or unreachable."""
+    """Direct (inline) processing – no Temporal."""
     job_id = job.job_id or uuid.uuid4().hex[:12]
     logger.info("Processing job %s directly  type=%s  loc=%s",
                 job_id, job.document_type.value, job.location_type.value)

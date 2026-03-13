@@ -1,8 +1,7 @@
 ###############################################################################
-# Document Conversion Service – Docker Compose
-# Services: LocalStack (SQS+S3), RabbitMQ, Kafka (KRaft), Temporal, App
+# Document Conversion Service – Docker Compose (latest images)
+# Services: LocalStack, RabbitMQ, Kafka (KRaft), Temporal, FTP, App
 ###############################################################################
-version: "3.9"
 
 x-common-env: &common-env
   AWS_ACCESS_KEY_ID: test
@@ -13,7 +12,7 @@ services:
   # ═════════════════════════ Infrastructure ══════════════════════════════════
 
   localstack:
-    image: localstack/localstack:3.4
+    image: localstack/localstack:latest
     container_name: docconv-localstack
     ports:
       - "4566:4566"
@@ -29,10 +28,10 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 15
 
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
+    image: rabbitmq:4-management-alpine
     container_name: docconv-rabbitmq
     ports:
       - "5672:5672"
@@ -46,34 +45,31 @@ services:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 10s
-      retries: 10
+      retries: 15
 
   kafka:
-    image: confluentinc/cp-kafka:7.6.1
+    image: apache/kafka:latest
     container_name: docconv-kafka
     ports:
       - "9092:9092"
     environment:
-      # ── KRaft mode (no ZooKeeper) ──
+      # KRaft mode (no ZooKeeper)
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qg
-      # ── Listeners ──
       KAFKA_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://0.0.0.0:9092,CONTROLLER://kafka:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      # ── Topic defaults ──
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      # ── Log dirs ──
       KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: "5L6g3nShT-eMCtK--X86sw"
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list || exit 1"]
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list || exit 1"]
       interval: 10s
       timeout: 10s
       retries: 15
@@ -97,7 +93,7 @@ services:
   # ═══════════════════════ Temporal.io Stack ═════════════════════════════════
 
   temporal-postgresql:
-    image: postgres:16-alpine
+    image: postgres:17-alpine
     container_name: docconv-temporal-db
     environment:
       POSTGRES_USER: temporal
@@ -115,7 +111,7 @@ services:
     image: temporalio/auto-setup:latest
     container_name: docconv-temporal
     ports:
-      - "7233:7233"          # gRPC frontend
+      - "7233:7233"
     depends_on:
       temporal-postgresql:
         condition: service_healthy
@@ -134,8 +130,8 @@ services:
       test: ["CMD", "temporal", "operator", "cluster", "health"]
       interval: 10s
       timeout: 10s
-      retries: 20
-      start_period: 40s
+      retries: 25
+      start_period: 45s
 
   temporal-admin-tools:
     image: temporalio/admin-tools:latest
@@ -155,7 +151,7 @@ services:
     image: temporalio/ui:latest
     container_name: docconv-temporal-ui
     ports:
-      - "8088:8080"          # Temporal Web UI
+      - "8088:8080"
     depends_on:
       temporal-server:
         condition: service_healthy
@@ -183,14 +179,12 @@ services:
         condition: service_healthy
     environment:
       <<: *common-env
-      # ── Feature flags ──
       ENABLE_API: "true"
       ENABLE_SQS: "true"
       ENABLE_RABBITMQ: "true"
       ENABLE_KAFKA: "true"
       ENABLE_TEMPORAL: "true"
-      USE_TEMPORAL_WORKFLOWS: "true"       # route jobs through Temporal
-      # ── Endpoints ──
+      USE_TEMPORAL_WORKFLOWS: "true"
       SQS_ENDPOINT_URL: http://localstack:4566
       SQS_QUEUE_NAME: docconv-jobs
       S3_ENDPOINT_URL: http://localstack:4566
@@ -204,11 +198,9 @@ services:
       KAFKA_TOPIC: docconv-jobs
       KAFKA_GROUP_ID: docconv-group
       FTP_HOST: ftp
-      # ── Temporal ──
       TEMPORAL_HOST: temporal-server:7233
       TEMPORAL_NAMESPACE: default
       TEMPORAL_TASK_QUEUE: docconv-tasks
-      # ── Tuning ──
       CHUNK_SIZE: "65536"
       TMP_DIR: /tmp/docconv
       LOG_LEVEL: INFO

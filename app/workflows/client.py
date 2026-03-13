@@ -1,11 +1,15 @@
 """
 Temporal client helper.
 
-Provides a simple interface for starting document conversion workflows
-from the API endpoints and message bus listeners.
+Two call paths:
+  - start_conversion_workflow()      – async, used by FastAPI endpoints
+  - start_conversion_workflow_sync() – sync, used by bus listener threads
+                                       (runs async code in a dedicated thread
+                                        to avoid nesting event loops)
 """
 
 import asyncio
+import concurrent.futures
 import logging
 import uuid
 from typing import Optional
@@ -21,12 +25,14 @@ from app.workflows.dataclasses import (
 
 logger = logging.getLogger(__name__)
 
-# Module-level cached client
+# Module-level cached client (one per event loop)
 _client: Optional[Client] = None
+# Thread pool for sync callers
+_thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 
 async def _get_client() -> Client:
-    """Get or create a Temporal client (cached)."""
+    """Get or create a Temporal client (cached per event loop)."""
     global _client
     if _client is None:
         _client = await Client.connect(
@@ -77,27 +83,19 @@ def _workflow_output_to_result(out: ConversionWorkflowOutput) -> ConversionResul
     )
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# ASYNC version – called from FastAPI endpoints (already in an event loop)
+# ═════════════════════════════════════════════════════════════════════════════
+
 async def start_conversion_workflow(
     job: ConversionJob,
     local_file_path: Optional[str] = None,
     wait_for_result: bool = True,
 ) -> ConversionResult:
     """
-    Start a Temporal DocumentConversionWorkflow for the given job.
+    Start a Temporal DocumentConversionWorkflow (async).
 
-    Parameters
-    ----------
-    job : ConversionJob
-        The conversion job descriptor.
-    local_file_path : str | None
-        If the file is already on disk (API upload), pass the path.
-    wait_for_result : bool
-        If True, blocks until the workflow completes and returns the result.
-        If False, returns immediately with a "pending" result.
-
-    Returns
-    -------
-    ConversionResult
+    Use this from FastAPI endpoints and any async context.
     """
     inp = _job_to_workflow_input(job, local_file_path)
     client = await _get_client()
@@ -127,20 +125,47 @@ async def start_conversion_workflow(
         )
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SYNC version – called from bus listener threads (no event loop running)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _run_in_new_loop(coro):
+    """Run an async coroutine in a brand-new event loop on the current thread."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def start_conversion_workflow_sync(
     job: ConversionJob,
     local_file_path: Optional[str] = None,
     wait_for_result: bool = True,
 ) -> ConversionResult:
     """
-    Synchronous wrapper for start_conversion_workflow.
+    Start a Temporal workflow (sync).
 
-    Used by the message bus listeners (which run in threads, not async).
+    Used by bus listener threads.  Detects whether an event loop is
+    already running (e.g. uvloop from FastAPI) and avoids nesting:
+      - If no loop running → creates a new loop (bus threads)
+      - If loop already running → runs in a thread pool (safety fallback)
     """
-    loop = asyncio.new_event_loop()
+    # Check if we're inside an existing event loop (FastAPI/uvloop)
     try:
-        return loop.run_until_complete(
-            start_conversion_workflow(job, local_file_path, wait_for_result)
-        )
-    finally:
-        loop.close()
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    coro = start_conversion_workflow(job, local_file_path, wait_for_result)
+
+    if loop is None:
+        # No event loop running – safe to create one (bus listener threads)
+        return _run_in_new_loop(coro)
+    else:
+        # Event loop already running (FastAPI) – offload to a thread
+        # This should NOT normally happen because FastAPI should call
+        # the async version directly, but this is a safety net.
+        logger.debug("Event loop already running – offloading to thread pool")
+        future = _thread_pool.submit(_run_in_new_loop, coro)
+        return future.result(timeout=settings.temporal_workflow_timeout)
