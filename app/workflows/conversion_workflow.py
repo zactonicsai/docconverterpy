@@ -100,7 +100,40 @@ class DocumentConversionWorkflow:
 
             local_path: Optional[str] = inp.local_file_path
 
+            # Track the local file for cleanup (applies to API uploads)
+            if local_path:
+                self._temp_files.append(local_path)
+
             if not local_path:
+                # No local file → must fetch from remote source
+                # Validate that LOCAL without a file path is an error
+                if inp.location_type == "local":
+                    return ConversionWorkflowOutput(
+                        job_id=inp.job_id,
+                        success=False,
+                        error="LOCAL location requires a local_file_path",
+                    )
+
+                # Validate required fields for remote sources
+                if inp.location_type == "s3" and (not inp.s3_bucket or not inp.s3_key):
+                    return ConversionWorkflowOutput(
+                        job_id=inp.job_id,
+                        success=False,
+                        error="s3_bucket and s3_key are required for S3 location",
+                    )
+                if inp.location_type == "url" and not inp.url:
+                    return ConversionWorkflowOutput(
+                        job_id=inp.job_id,
+                        success=False,
+                        error="url is required for URL location",
+                    )
+                if inp.location_type == "ftp" and (not inp.ftp_host or not inp.ftp_path):
+                    return ConversionWorkflowOutput(
+                        job_id=inp.job_id,
+                        success=False,
+                        error="ftp_host and ftp_path are required for FTP location",
+                    )
+
                 self._current_step = "FETCHING"
                 self._status = "FETCHING"
 

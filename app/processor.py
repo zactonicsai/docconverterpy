@@ -2,11 +2,13 @@
 Processing pipeline: fetch → convert → upload.
 
 Supports two execution modes:
-  1. Direct (USE_TEMPORAL_WORKFLOWS=false): inline pipeline, same as before.
-  2. Temporal (USE_TEMPORAL_WORKFLOWS=true): submits a durable workflow to
-     Temporal and waits for the result.
+  1. Direct (USE_TEMPORAL_WORKFLOWS=false): inline pipeline.
+  2. Temporal (USE_TEMPORAL_WORKFLOWS=true): durable workflow for ALL jobs,
+     including direct file uploads. Every conversion appears in the
+     Temporal dashboard.
 
-The mode is controlled by the USE_TEMPORAL_WORKFLOWS env var.
+For LOCAL uploads, the workflow skips the fetch step (file is already on
+disk) and goes straight to convert → upload → cleanup.
 """
 
 import logging
@@ -26,47 +28,46 @@ def process_job(job: ConversionJob, local_file_path: str | None = None) -> Conve
     """
     Execute the full conversion pipeline for a single job.
 
-    If USE_TEMPORAL_WORKFLOWS is enabled and Temporal is running, this
-    will route through a durable Temporal workflow.  Otherwise, it runs
-    the pipeline directly (inline).
+    When Temporal is enabled, ALL jobs (including file uploads) route
+    through Temporal for full dashboard visibility. The workflow skips
+    the fetch step for LOCAL uploads since the file is already on disk.
     """
     if settings.use_temporal_workflows and settings.enable_temporal:
         return _process_via_temporal(job, local_file_path)
-    else:
-        return _process_direct(job, local_file_path)
+
+    return _process_direct(job, local_file_path)
 
 
 def _process_via_temporal(
     job: ConversionJob, local_file_path: str | None = None
 ) -> ConversionResult:
-    """Submit a job to Temporal and wait for the result."""
+    """Submit any job to Temporal – remote or local upload."""
     job_id = job.job_id or uuid.uuid4().hex[:12]
     job.job_id = job_id
-    logger.info("Routing job %s through Temporal workflow", job_id)
+    logger.info("Routing job %s through Temporal  type=%s  loc=%s  local_path=%s",
+                job_id, job.document_type.value, job.location_type.value,
+                "yes" if local_file_path else "no")
 
     try:
         from app.workflows.client import start_conversion_workflow_sync
         return start_conversion_workflow_sync(
-            job, local_file_path, wait_for_result=True
+            job, local_file_path=local_file_path, wait_for_result=True
         )
     except Exception as exc:
         logger.warning(
             "Temporal routing failed for job %s, falling back to direct: %s",
             job_id, exc,
         )
-        # Fall back to direct processing
         return _process_direct(job, local_file_path)
 
 
 def _process_direct(
     job: ConversionJob, local_file_path: str | None = None
 ) -> ConversionResult:
-    """
-    Direct (inline) processing – the original pipeline.
-    """
+    """Direct (inline) processing – fallback when Temporal is off or unreachable."""
     job_id = job.job_id or uuid.uuid4().hex[:12]
     logger.info("Processing job %s directly  type=%s  loc=%s",
-                job_id, job.document_type, job.location_type)
+                job_id, job.document_type.value, job.location_type.value)
 
     try:
         if job.location_type == LocationType.LOCAL and local_file_path:
