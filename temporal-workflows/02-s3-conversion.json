@@ -1,0 +1,10 @@
+{
+  "job_id": "demo-s3-001",
+  "document_type": "pdf",
+  "location_type": "s3",
+  "s3_bucket": "docconv-input",
+  "s3_key": "docs/report.pdf",
+  "s3_endpoint_url": "http://localstack:4566",
+  "output_s3_bucket": "docconv-output",
+  "output_s3_key": "converted/demo-s3-001.txt"
+}

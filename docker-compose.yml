@@ -1,6 +1,6 @@
 ###############################################################################
 # Document Conversion Service – Docker Compose
-# Services: LocalStack (SQS+S3), RabbitMQ, Kafka+Zookeeper, Temporal, App
+# Services: LocalStack (SQS+S3), RabbitMQ, Kafka (KRaft), Temporal, App
 ###############################################################################
 version: "3.9"
 
@@ -48,39 +48,36 @@ services:
       timeout: 10s
       retries: 10
 
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.1
-    container_name: docconv-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 | grep imok"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   kafka:
     image: confluentinc/cp-kafka:7.6.1
     container_name: docconv-kafka
     ports:
       - "9092:9092"
-    depends_on:
-      zookeeper:
-        condition: service_healthy
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      # ── KRaft mode (no ZooKeeper) ──
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qg
+      # ── Listeners ──
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://0.0.0.0:9092,CONTROLLER://kafka:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # ── Topic defaults ──
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      # ── Log dirs ──
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
     healthcheck:
       test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list || exit 1"]
       interval: 10s
       timeout: 10s
-      retries: 10
+      retries: 15
+      start_period: 30s
 
   ftp:
     image: fauria/vsftpd:latest
@@ -149,6 +146,8 @@ services:
     environment:
       - TEMPORAL_ADDRESS=temporal-server:7233
       - TEMPORAL_CLI_ADDRESS=temporal-server:7233
+    volumes:
+      - "./temporal-workflows:/workflows:ro"
     stdin_open: true
     tty: true
 

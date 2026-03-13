@@ -1,0 +1,9 @@
+{
+  "bucket": "docconv-input",
+  "prefix": "inbox/",
+  "output_bucket": "docconv-output",
+  "output_prefix": "converted/",
+  "s3_endpoint_url": "http://localstack:4566",
+  "move_processed_to": "processed/",
+  "max_files": 100
+}

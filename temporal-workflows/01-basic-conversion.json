@@ -1,0 +1,8 @@
+{
+  "job_id": "demo-conv-001",
+  "document_type": "html",
+  "location_type": "url",
+  "url": "https://example.com",
+  "output_s3_bucket": "docconv-output",
+  "output_s3_key": null
+}

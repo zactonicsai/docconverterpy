@@ -1,0 +1,20 @@
+[
+  {
+    "job_id": "batch-item-1",
+    "document_type": "html",
+    "location_type": "url",
+    "url": "https://example.com"
+  },
+  {
+    "job_id": "batch-item-2",
+    "document_type": "html",
+    "location_type": "url",
+    "url": "https://httpbin.org/html"
+  },
+  {
+    "job_id": "batch-item-3",
+    "document_type": "txt",
+    "location_type": "url",
+    "url": "https://httpbin.org/robots.txt"
+  }
+]

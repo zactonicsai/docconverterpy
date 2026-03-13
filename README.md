@@ -33,18 +33,17 @@ environment variables.
           └─────────────────────────────────────────────────────┘
 ```
 
-### Docker Services (10 containers)
+### Docker Services (9 containers)
 
 | Service | Image | Ports | Purpose |
 |---------|-------|-------|---------|
 | localstack | `localstack/localstack:3.4` | 4566 | SQS queues + S3 buckets |
 | rabbitmq | `rabbitmq:3.13-management-alpine` | 5672, 15672 (UI) | RabbitMQ message bus |
-| zookeeper | `confluentinc/cp-zookeeper:7.6.1` | 2181 | Kafka coordination |
-| kafka | `confluentinc/cp-kafka:7.6.1` | 9092 | Kafka message bus |
+| kafka | `confluentinc/cp-kafka:7.6.1` | 9092 | Kafka message bus (KRaft, no ZooKeeper) |
 | temporal-postgresql | `postgres:16-alpine` | — | Temporal persistence DB |
-| temporal-server | `temporalio/auto-setup:1.24.2` | 7233 | Temporal gRPC frontend |
-| temporal-admin-tools | `temporalio/admin-tools:1.24.2` | — | Temporal CLI tools |
-| temporal-ui | `temporalio/ui:2.26.2` | **8088** | Temporal Web UI |
+| temporal-server | `temporalio/auto-setup:latest` | 7233 | Temporal gRPC frontend |
+| temporal-admin-tools | `temporalio/admin-tools:latest` | — | Temporal CLI tools |
+| temporal-ui | `temporalio/ui:latest` | **8088** | Temporal Web UI |
 | ftp | `fauria/vsftpd` | 21, 21100-21110 | Demo FTP server |
 | docconv-app | *Built from Dockerfile* | **8080** | The conversion service |
 
@@ -59,7 +58,7 @@ cd docconv-service
 # 2. Make the init script executable
 chmod +x scripts/init-localstack.sh
 
-# 3. Build and start everything (10 services)
+# 3. Build and start everything (9 services)
 docker compose up --build -d
 
 # 4. Open the API Test Console
@@ -349,7 +348,7 @@ FastAPI auto-generated Swagger/OpenAPI documentation.
 
 ```
 docconv-service/
-├── docker-compose.yml          # Full stack (10 services)
+├── docker-compose.yml          # Full stack (9 services)
 ├── Dockerfile                  # App container image
 ├── requirements.txt            # Python dependencies
 ├── .env.example                # All configurable env vars

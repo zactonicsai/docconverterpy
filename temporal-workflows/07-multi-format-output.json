@@ -1,0 +1,12 @@
+{
+  "job_id": "demo-multi-001",
+  "document_type": "html",
+  "location_type": "url",
+  "url": "https://example.com",
+  "output_s3_bucket": "docconv-output",
+  "output_prefix": "multi/",
+  "produce_full_text": true,
+  "produce_pages": true,
+  "produce_metadata_json": true,
+  "produce_analytics": true
+}

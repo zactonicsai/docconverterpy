@@ -600,6 +600,9 @@ def test_temporal():
     try:
         from app.workflows.activities import ALL_ACTIVITIES
         assert len(ALL_ACTIVITIES) == 12  # fetch + 9 convert + upload + cleanup
+        # Extended activities
+        from app.workflows.activities_ext import ALL_EXTENDED_ACTIVITIES
+        assert len(ALL_EXTENDED_ACTIVITIES) == 10  # scan, move, validate, analyze, metadata, webhook, ocr, split, cleanup, health
         # Verify all have temporal activity definitions
         for act in ALL_ACTIVITIES:
             assert hasattr(act, "__temporal_activity_definition"), \
@@ -610,14 +613,79 @@ def test_temporal():
 
     # ── All workflow classes have definitions ─────────────────────────────
     try:
-        from app.workflows.worker import ALL_WORKFLOWS
-        assert len(ALL_WORKFLOWS) >= 11  # main + batch + 9 child
+        from app.workflows.worker import ALL_WORKFLOWS, COMBINED_ACTIVITIES
+        assert len(ALL_WORKFLOWS) == 17  # 2 core + 9 child + 6 extended
+        assert len(COMBINED_ACTIVITIES) == 22  # 12 core + 10 extended
         for wf_cls in ALL_WORKFLOWS:
             assert hasattr(wf_cls, "__temporal_workflow_definition"), \
                 f"{wf_cls.__name__} is not a Temporal workflow"
         results["Temporal: workflow class registry"] = {"status": PASS}
     except Exception as e:
         results["Temporal: workflow class registry"] = {"status": FAIL, "error": str(e)}
+
+    # ── Extended dataclasses ─────────────────────────────────────────────
+    try:
+        from app.workflows.dataclasses_ext import (
+            S3FolderWatchInput, PipelineWorkflowInput,
+            MultiFormatInput, RetryEscalationInput,
+            WebhookNotificationWorkflowInput,
+            ScheduledCleanupInput, ValidateInput, AnalyzeTextInput,
+        )
+        # Verify defaults
+        s3w = S3FolderWatchInput(bucket="test")
+        assert s3w.prefix == "inbox/"
+        assert s3w.max_files == 100
+        pipe = PipelineWorkflowInput(job_id="x", document_type="pdf", location_type="s3")
+        assert pipe.enable_validation is True
+        assert pipe.enable_analytics is True
+        mf = MultiFormatInput(job_id="x", document_type="pdf", location_type="url")
+        assert mf.produce_pages is True
+        re_inp = RetryEscalationInput(job_id="x", document_type="pdf", location_type="s3")
+        assert re_inp.min_chars_threshold == 50
+        assert re_inp.escalation_dpi == 400
+        wh = WebhookNotificationWorkflowInput(job_id="x", document_type="pdf", location_type="url")
+        assert wh.on_start_webhook is None
+        sc = ScheduledCleanupInput()
+        assert sc.max_age_hours == 24
+        results["Temporal: extended dataclasses"] = {"status": PASS}
+    except Exception as e:
+        results["Temporal: extended dataclasses"] = {"status": FAIL, "error": str(e)}
+
+    # ── Extended workflow imports ─────────────────────────────────────────
+    try:
+        from app.workflows.pipeline_workflow import DocumentPipelineWorkflow
+        from app.workflows.s3_watch_workflow import S3FolderWatchWorkflow
+        from app.workflows.webhook_workflow import WebhookNotificationWorkflow
+        from app.workflows.multi_output_workflow import MultiFormatOutputWorkflow
+        from app.workflows.retry_escalation_workflow import RetryEscalationWorkflow
+        from app.workflows.scheduled_workflow import ScheduledMaintenanceWorkflow
+        # Verify all have temporal definitions
+        for wf in [DocumentPipelineWorkflow, S3FolderWatchWorkflow,
+                    WebhookNotificationWorkflow, MultiFormatOutputWorkflow,
+                    RetryEscalationWorkflow, ScheduledMaintenanceWorkflow]:
+            assert hasattr(wf, "__temporal_workflow_definition"), f"{wf.__name__} missing defn"
+        results["Temporal: extended workflow imports"] = {"status": PASS}
+    except Exception as e:
+        results["Temporal: extended workflow imports"] = {"status": FAIL, "error": str(e)}
+
+    # ── Extended activity imports ─────────────────────────────────────────
+    try:
+        from app.workflows.activities_ext import (
+            scan_s3_prefix_activity, validate_document_activity,
+            analyze_text_activity, send_webhook_activity,
+            enhanced_ocr_convert_activity, split_text_by_pages_activity,
+            scheduled_tmp_cleanup_activity, check_s3_health_activity,
+            generate_metadata_json_activity, move_s3_object_activity,
+        )
+        for act in [scan_s3_prefix_activity, validate_document_activity,
+                     analyze_text_activity, send_webhook_activity,
+                     enhanced_ocr_convert_activity, split_text_by_pages_activity,
+                     scheduled_tmp_cleanup_activity, check_s3_health_activity,
+                     generate_metadata_json_activity, move_s3_object_activity]:
+            assert hasattr(act, "__temporal_activity_definition"), f"{act.__name__} missing defn"
+        results["Temporal: extended activity imports"] = {"status": PASS}
+    except Exception as e:
+        results["Temporal: extended activity imports"] = {"status": FAIL, "error": str(e)}
 
     # ── Direct fallback when Temporal disabled ───────────────────────────
     try:

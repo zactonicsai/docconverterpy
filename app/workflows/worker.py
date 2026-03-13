@@ -1,34 +1,54 @@
 """
 Temporal worker for the document conversion service.
 
-Registers all workflows and activities, connects to the Temporal server,
-and polls for tasks.  Designed to run in a background thread alongside
-the API and bus listeners.
+Registers ALL workflows and activities (core + extended), connects to
+the Temporal server, and polls for tasks.
 """
 
 import asyncio
 import logging
-import time
 
 from temporalio.client import Client
 from temporalio.worker import Worker
 
 from config.settings import settings
+
+# ── Core workflows & activities ──────────────────────────────────────────────
 from app.workflows.activities import ALL_ACTIVITIES
+from app.workflows.activities_ext import ALL_EXTENDED_ACTIVITIES
 from app.workflows.document_workflows import ALL_CHILD_WORKFLOWS
 from app.workflows.conversion_workflow import (
     DocumentConversionWorkflow,
     BatchConversionWorkflow,
 )
 
+# ── Extended workflows ───────────────────────────────────────────────────────
+from app.workflows.pipeline_workflow import DocumentPipelineWorkflow
+from app.workflows.s3_watch_workflow import S3FolderWatchWorkflow
+from app.workflows.webhook_workflow import WebhookNotificationWorkflow
+from app.workflows.multi_output_workflow import MultiFormatOutputWorkflow
+from app.workflows.retry_escalation_workflow import RetryEscalationWorkflow
+from app.workflows.scheduled_workflow import ScheduledMaintenanceWorkflow
+
 logger = logging.getLogger(__name__)
 
-# All workflow classes to register
+# ── Combined registries ─────────────────────────────────────────────────────
+
 ALL_WORKFLOWS = [
+    # Core
     DocumentConversionWorkflow,
     BatchConversionWorkflow,
     *ALL_CHILD_WORKFLOWS,
+    # Extended
+    DocumentPipelineWorkflow,
+    S3FolderWatchWorkflow,
+    WebhookNotificationWorkflow,
+    MultiFormatOutputWorkflow,
+    RetryEscalationWorkflow,
+    ScheduledMaintenanceWorkflow,
 ]
+
+COMBINED_ACTIVITIES = ALL_ACTIVITIES + ALL_EXTENDED_ACTIVITIES
 
 
 async def _run_worker():
@@ -40,7 +60,6 @@ async def _run_worker():
         settings.temporal_task_queue,
     )
 
-    # Retry connection (Temporal may still be starting)
     client = None
     for attempt in range(30):
         try:
@@ -51,9 +70,7 @@ async def _run_worker():
             logger.info("Connected to Temporal server")
             break
         except Exception as exc:
-            logger.debug(
-                "Temporal connection attempt %d failed: %s", attempt + 1, exc
-            )
+            logger.debug("Temporal connection attempt %d failed: %s", attempt + 1, exc)
             await asyncio.sleep(3)
 
     if client is None:
@@ -64,24 +81,19 @@ async def _run_worker():
         client,
         task_queue=settings.temporal_task_queue,
         workflows=ALL_WORKFLOWS,
-        activities=ALL_ACTIVITIES,
+        activities=COMBINED_ACTIVITIES,
     )
 
     logger.info(
         "Temporal worker running  workflows=%d  activities=%d",
         len(ALL_WORKFLOWS),
-        len(ALL_ACTIVITIES),
+        len(COMBINED_ACTIVITIES),
     )
     await worker.run()
 
 
 def run_temporal_worker():
-    """
-    Blocking entry point for running the Temporal worker in a thread.
-
-    Creates a new asyncio event loop (since this runs in a daemon thread,
-    not the main thread).
-    """
+    """Blocking entry point for the Temporal worker thread."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
